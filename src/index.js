@@ -115,7 +115,7 @@ async function handleUpdate(update, env, lastBatch) {
   const message = update.message;
   if (!message?.text || !message.chat || !message.from) return;
 
-  const match = message.text.match(/^\/(setusers|announce|help)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  const match = message.text.match(/^\/(setusers|announce|notifhelp)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
   if (!match) return;
 
   const command = match[1].toLowerCase();
@@ -127,7 +127,7 @@ async function handleUpdate(update, env, lastBatch) {
     return;
   }
 
-  if (command === "help") {
+  if (command === "notifhelp") {
     await sendMessage(
       env,
       chat.id,
@@ -270,4 +270,4 @@ const SETUP_HTML = `<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-
 <style>body{font:18px system-ui;max-width:520px;margin:60px auto;padding:24px;background:#101820;color:#fff}input,button{box-sizing:border-box;width:100%;padding:14px;margin:10px 0;font:inherit}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
 <h1>فعال‌سازی بات تلگرام</h1><p>مقدار REGISTER_SECRET تنظیم‌شده در Cloudflare را وارد کن. جدول‌های دیتابیس ساخته می‌شوند و اتصال تلگرام فعال می‌شود.</p>
 <form><label for="secret">رمز راه‌اندازی</label><input id="secret" type="password" autocomplete="off" required><button>فعال‌سازی بات</button></form><pre id="result" role="status"></pre>
-<script>document.querySelector('form').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('secret'),b=document.querySelector('button'),o=document.getElementById('result');b.disabled=true;o.textContent='در حال فعال‌سازی…';try{const r=await fetch('/register-webhook',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=r.ok?'بات فعال شد. حالا داخل گروه /help را بفرست.':'فعال‌سازی ناموفق: '+await r.text()}catch(e){o.textContent='اتصال برقرار نشد؛ دوباره امتحان کن.'}finally{b.disabled=false}});</script></html>`;
+<script>document.querySelector('form').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('secret'),b=document.querySelector('button'),o=document.getElementById('result');b.disabled=true;o.textContent='در حال فعال‌سازی…';try{const r=await fetch('/register-webhook',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=r.ok?'بات فعال شد. حالا داخل گروه /notifhelp را بفرست.':'فعال‌سازی ناموفق: '+await r.text()}catch(e){o.textContent='اتصال برقرار نشد؛ دوباره امتحان کن.'}finally{b.disabled=false}});</script></html>`;
