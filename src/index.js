@@ -1,3 +1,72 @@
+const GROUP_USERNAMES = [
+  "A3zin",
+  "aeonclo",
+  "Peymanspr",
+  "marziyeh_168",
+  "metita98",
+  "Kaveh829",
+  "Nima2388",
+  "rreezzaa098",
+  "hasan_trh",
+  "Sh4hink",
+  "Amirho3yn_hz",
+  "Realilidan",
+  "Imsarom76",
+  "h0sn_m",
+  "blockchain1385",
+  "moricryptoo",
+  "A_Sicilian",
+  "hasanasadi_1",
+  "Prot3ctor",
+  "alifa_eth",
+  "Adelalizadeh13",
+  "Mahdi_Arshadi",
+  "shexter99",
+  "nftshay",
+  "habibsadi",
+  "sama_parsa1",
+  "ho3einrezaeii",
+  "mohamadjfr57",
+  "Crypto_2040",
+  "dani97977",
+  "Kaveh_niki",
+  "mr_gh0st78",
+  "Mikaweil1",
+  "uan44",
+  "sh_yasa74",
+  "EMsYazdi",
+  "Erfann5427",
+  "imyounestaheri",
+  "meysamm34m",
+  "radman_sistan",
+  "missbhz",
+  "arsalanmariam",
+  "GHODSI_HOSSEIN",
+  "Septa_RM",
+  "Other_lifee",
+  "Parviz_8998",
+  "mellyssammp",
+  "mousa_ghm",
+  "Boshraelteja",
+  "David_shah",
+  "Armin_Ameriii",
+  "Mmdhmoradi",
+  "Vhdktz",
+  "mahdighu1",
+  "rahaaaxr",
+  "Predator140",
+  "Moha00mm",
+  "Kian_klv",
+  "mohammadazarpur",
+  "Nooeth",
+  "Pinktele",
+  "Moeinfallah",
+  "armin7495",
+  "rezaes1371",
+  "Skeletonking71",
+  "his_mini",
+  "L909192"
+];
 const BATCH_SIZE = 5;
 const PAUSE_MS = 1000;
 const MAX_USERNAMES = 200;
@@ -122,7 +191,7 @@ async function handleUpdate(update, env, lastBatch) {
   const message = update.message;
   if (!message?.text || !message.chat || !message.from) return;
 
-  const match = message.text.match(/^\/(setusers|announce|notifhelp)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  const match = message.text.match(/^\/(announce|notifhelp)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
   if (!match) return;
 
   const command = match[1].toLowerCase();
@@ -138,7 +207,7 @@ async function handleUpdate(update, env, lastBatch) {
     await sendMessage(
       env,
       chat.id,
-      "مدیر گروه: یک‌بار /setusers را همراه فهرست یوزرنیم‌ها بفرست.\n" +
+      "فهرست ۶۷ نفر از قبل داخل بات ثبت شده؛ نیازی به /setusers نیست.\n" +
       "برای شروع ارسال: /announce\n" +
       "برای متن دلخواه: /announce متن یک‌خطی خبر\n" +
       "برای ریپلای‌کردن تگ‌ها به خبر، روی همان خبر Reply کن و /announce بفرست.",
@@ -152,51 +221,7 @@ async function handleUpdate(update, env, lastBatch) {
     return;
   }
 
-  if (command === "setusers") {
-    const usernames = parseUsernames(args);
-    if (!usernames.length) {
-      await sendMessage(
-        env,
-        chat.id,
-        "یوزرنیم‌ها را بعد از دستور بفرست؛ مثل:\n/setusers @userone @usertwo",
-        message
-      );
-      return;
-    }
-    if (usernames.length > MAX_USERNAMES) {
-      await sendMessage(env, chat.id, `حداکثر ${MAX_USERNAMES} یوزرنیم را می‌توانی ثبت کنی.`, message);
-      return;
-    }
-
-    // Keep D1 queries and bound parameters within free-plan invocation limits.
-    const statements = [
-      env.DB.prepare("DELETE FROM group_usernames WHERE chat_id = ?").bind(String(chat.id)),
-    ];
-    for (let offset = 0; offset < usernames.length; offset += 30) {
-      const chunk = usernames.slice(offset, offset + 30);
-      statements.push(env.DB.prepare(
-        "INSERT INTO group_usernames (chat_id, username, position) VALUES " +
-        chunk.map(() => "(?, ?, ?)").join(", ")
-      ).bind(...chunk.flatMap((username, index) => [String(chat.id), username, offset + index])));
-    }
-    try {
-      await env.DB.batch(statements);
-    } catch (error) {
-      await sendMessage(env, chat.id, "ذخیره فهرست انجام نشد؛ خطای دیتابیس رخ داد. دوباره امتحان کن.", message);
-      throw error;
-    }
-    await sendMessage(env, chat.id, `انجام شد؛ ${usernames.length} یوزرنیم برای این گروه ذخیره شد.`, message);
-    return;
-  }
-
-  const rows = await env.DB.prepare(
-    "SELECT username FROM group_usernames WHERE chat_id = ? ORDER BY position"
-  ).bind(String(chat.id)).all();
-  const usernames = (rows.results || []).map((row) => row.username);
-  if (!usernames.length) {
-    await sendMessage(env, chat.id, "اول فهرست را با /setusers و یوزرنیم‌ها ثبت کن.", message);
-    return;
-  }
+  const usernames = GROUP_USERNAMES;
 
   let announcement = args.replace(/\s+/g, " ").trim() || DEFAULT_ANNOUNCEMENT;
   if (announcement.length > MAX_ANNOUNCEMENT_LENGTH) {
