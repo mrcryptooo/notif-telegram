@@ -1,0 +1,245 @@
+const BATCH_SIZE = 5;
+const PAUSE_MS = 1000;
+const MAX_USERNAMES = 200;
+const MAX_ANNOUNCEMENT_LENGTH = 1000;
+const DEFAULT_ANNOUNCEMENT =
+  "این یک فرصت یا خبر مهمه؛ چون تگ شدی حتماً چکش کن.";
+const USERNAME_RE = /@([A-Za-z0-9_]{5,32})\b/g;
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      return new Response("ok", { headers: { "content-type": "text/plain" } });
+    }
+
+    if (request.method === "POST" && url.pathname === "/register-webhook") {
+      if (!env.REGISTER_SECRET || request.headers.get("Authorization") !== `Bearer ${env.REGISTER_SECRET}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const result = await telegram(env, "setWebhook", {
+        url: new URL("/telegram", url).toString(),
+        secret_token: env.WEBHOOK_SECRET,
+        allowed_updates: ["message"],
+      });
+      return Response.json({ ok: true, result });
+    }
+
+    if (request.method !== "POST" || url.pathname !== "/telegram") {
+      return new Response("Not found", { status: 404 });
+    }
+
+    if (!env.WEBHOOK_SECRET ||
+        request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
+    let update;
+    try {
+      update = await request.json();
+    } catch {
+      return new Response("Invalid JSON", { status: 400 });
+    }
+
+    if (!Number.isSafeInteger(update?.update_id)) {
+      return new Response("ok");
+    }
+
+    const claim = await claimUpdate(env.DB, String(update.update_id));
+    if (claim.state === "done" || claim.state === "busy") {
+      return new Response("ok");
+    }
+
+    try {
+      await handleUpdate(update, env, claim.lastBatch);
+      await env.DB.prepare(
+        "UPDATE processed_updates SET status = 'done', lease_until = 0 WHERE update_id = ?"
+      ).bind(String(update.update_id)).run();
+      return new Response("ok");
+    } catch (error) {
+      await env.DB.prepare(
+        "UPDATE processed_updates SET lease_until = 0 WHERE update_id = ? AND status = 'running'"
+      ).bind(String(update.update_id)).run();
+      // Do not log request URLs or Telegram tokens.
+      console.error("Update failed:", safeError(error));
+      return new Response("Temporary processing error", { status: 500 });
+    }
+  },
+};
+
+async function claimUpdate(db, updateId) {
+  const inserted = await db.prepare(
+    "INSERT OR IGNORE INTO processed_updates (update_id, status, last_batch, lease_until) VALUES (?, 'running', 0, unixepoch() + 90)"
+  ).bind(updateId).run();
+  if (inserted.meta?.changes) return { state: "claimed", lastBatch: 0 };
+
+  const reclaimed = await db.prepare(
+    "UPDATE processed_updates SET lease_until = unixepoch() + 90 " +
+    "WHERE update_id = ? AND status = 'running' AND lease_until < unixepoch() " +
+    "RETURNING last_batch"
+  ).bind(updateId).all();
+  if (reclaimed.results?.length) {
+    return { state: "claimed", lastBatch: reclaimed.results[0].last_batch };
+  }
+
+  const row = await db.prepare(
+    "SELECT status FROM processed_updates WHERE update_id = ?"
+  ).bind(updateId).first();
+  return { state: row?.status === "done" ? "done" : "busy" };
+}
+
+async function handleUpdate(update, env, lastBatch) {
+  const message = update.message;
+  if (!message?.text || !message.chat || !message.from) return;
+
+  const match = message.text.match(/^\/(setusers|announce|help)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  if (!match) return;
+
+  const command = match[1].toLowerCase();
+  const args = (match[2] || "").trim();
+  const chat = message.chat;
+
+  if (!["group", "supergroup"].includes(chat.type)) {
+    await sendMessage(env, chat.id, "این دستور را داخل گروه اجرا کن.", message);
+    return;
+  }
+
+  if (command === "help") {
+    await sendMessage(
+      env,
+      chat.id,
+      "مدیر گروه: یک‌بار /setusers را همراه فهرست یوزرنیم‌ها بفرست.\n" +
+      "برای شروع ارسال: /announce\n" +
+      "برای متن دلخواه: /announce متن یک‌خطی خبر\n" +
+      "برای ریپلای‌کردن تگ‌ها به خبر، روی همان خبر Reply کن و /announce بفرست.",
+      message
+    );
+    return;
+  }
+
+  if (!(await isAdmin(env, chat.id, message.from.id))) {
+    await sendMessage(env, chat.id, "این دستور فقط برای مدیران گروه است.", message);
+    return;
+  }
+
+  if (command === "setusers") {
+    const usernames = parseUsernames(args);
+    if (!usernames.length) {
+      await sendMessage(
+        env,
+        chat.id,
+        "یوزرنیم‌ها را بعد از دستور بفرست؛ مثل:\n/setusers @userone @usertwo",
+        message
+      );
+      return;
+    }
+    if (usernames.length > MAX_USERNAMES) {
+      await sendMessage(env, chat.id, `حداکثر ${MAX_USERNAMES} یوزرنیم را می‌توانی ثبت کنی.`, message);
+      return;
+    }
+
+    const statements = [
+      env.DB.prepare("DELETE FROM group_usernames WHERE chat_id = ?").bind(String(chat.id)),
+      ...usernames.map((username, index) =>
+        env.DB.prepare(
+          "INSERT INTO group_usernames (chat_id, username, position) VALUES (?, ?, ?)"
+        ).bind(String(chat.id), username, index)
+      ),
+    ];
+    await env.DB.batch(statements);
+    await sendMessage(env, chat.id, `انجام شد؛ ${usernames.length} یوزرنیم برای این گروه ذخیره شد.`, message);
+    return;
+  }
+
+  const rows = await env.DB.prepare(
+    "SELECT username FROM group_usernames WHERE chat_id = ? ORDER BY position"
+  ).bind(String(chat.id)).all();
+  const usernames = (rows.results || []).map((row) => row.username);
+  if (!usernames.length) {
+    await sendMessage(env, chat.id, "اول فهرست را با /setusers و یوزرنیم‌ها ثبت کن.", message);
+    return;
+  }
+
+  let announcement = args.replace(/\s+/g, " ").trim() || DEFAULT_ANNOUNCEMENT;
+  if (announcement.length > MAX_ANNOUNCEMENT_LENGTH) {
+    await sendMessage(env, chat.id, "متن اعلان حداکثر ۱۰۰۰ کاراکتر باشد.", message);
+    return;
+  }
+
+  const batchCount = Math.ceil(usernames.length / BATCH_SIZE);
+  const replyTargetId = message.reply_to_message?.message_id;
+  for (let batchIndex = lastBatch; batchIndex < batchCount; batchIndex++) {
+    const batch = usernames.slice(batchIndex * BATCH_SIZE, (batchIndex + 1) * BATCH_SIZE);
+    const text = `${batch.map((username) => `@${username}`).join(" ")}\n\n${announcement}`;
+    await sendMessage(env, chat.id, text, message, replyTargetId);
+    await env.DB.prepare(
+      "UPDATE processed_updates SET last_batch = ?, lease_until = unixepoch() + 90 WHERE update_id = ?"
+    ).bind(batchIndex + 1, String(update.update_id)).run();
+    if (batchIndex + 1 < batchCount) await delay(PAUSE_MS);
+  }
+
+  await sendMessage(
+    env,
+    chat.id,
+    `انجام شد؛ ${usernames.length} نفر در ${batchCount} پیام پنج‌نفره تگ شدند.`,
+    message
+  );
+}
+
+function parseUsernames(raw) {
+  const usernames = [];
+  const seen = new Set();
+  for (const match of raw.matchAll(USERNAME_RE)) {
+    const username = match[1];
+    const key = username.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      usernames.push(username);
+    }
+  }
+  return usernames;
+}
+
+async function isAdmin(env, chatId, userId) {
+  const member = await telegram(env, "getChatMember", { chat_id: chatId, user_id: userId });
+  return member.status === "administrator" || member.status === "creator";
+}
+
+async function sendMessage(env, chatId, text, sourceMessage, replyToId) {
+  const body = { chat_id: chatId, text };
+  if (sourceMessage?.message_thread_id !== undefined) {
+    body.message_thread_id = sourceMessage.message_thread_id;
+  }
+  if (replyToId !== undefined) {
+    body.reply_parameters = { message_id: replyToId };
+  } else if (sourceMessage?.message_id !== undefined) {
+    body.reply_parameters = { message_id: sourceMessage.message_id };
+  }
+  return telegram(env, "sendMessage", body);
+}
+
+async function telegram(env, method, payload) {
+  if (!env.TELEGRAM_BOT_TOKEN) throw new Error("Telegram bot token is not configured.");
+  const response = await fetch(
+    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    throw new Error(`Telegram API returned ${response.status}: ${data.description || "request failed"}`);
+  }
+  return data.result;
+}
+
+function safeError(error) {
+  return error instanceof Error ? error.message.slice(0, 300) : "Unknown error";
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
