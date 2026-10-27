@@ -200,6 +200,16 @@ async function processRequest(request, env) {
       ).bind(String(update.update_id)).run();
       return new Response("ok");
     } catch (error) {
+      if (/message to be replied (?:not found|not found in the chat)/i.test(safeError(error))) {
+        await recordError(env, error);
+        await env.DB.prepare(
+          "UPDATE processed_updates SET status = 'done', lease_until = 0 WHERE update_id = ?"
+        ).bind(String(update.update_id)).run();
+        await sendMessage(env, update.message.chat.id,
+          "پیام خبرِ مقصد پیدا نشد؛ ممکن است حذف شده باشد. روی خبر موجود در همین تاپیک Reply کن و دوباره /announce@callermrcryptobot را بفرست.",
+          update.message);
+        return new Response("ok");
+      }
       await env.DB.prepare(
         "UPDATE processed_updates SET lease_until = 0 WHERE update_id = ? AND status = 'running'"
       ).bind(String(update.update_id)).run();
@@ -319,8 +329,6 @@ async function sendMessage(env, chatId, text, sourceMessage, replyToId) {
   }
   if (replyToId !== undefined) {
     body.reply_parameters = { message_id: replyToId };
-  } else if (sourceMessage?.message_id !== undefined) {
-    body.reply_parameters = { message_id: sourceMessage.message_id };
   }
   return telegram(env, "sendMessage", body);
 }
