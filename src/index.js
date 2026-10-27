@@ -168,15 +168,23 @@ async function handleUpdate(update, env, lastBatch) {
       return;
     }
 
+    // Keep D1 queries and bound parameters within free-plan invocation limits.
     const statements = [
       env.DB.prepare("DELETE FROM group_usernames WHERE chat_id = ?").bind(String(chat.id)),
-      ...usernames.map((username, index) =>
-        env.DB.prepare(
-          "INSERT INTO group_usernames (chat_id, username, position) VALUES (?, ?, ?)"
-        ).bind(String(chat.id), username, index)
-      ),
     ];
-    await env.DB.batch(statements);
+    for (let offset = 0; offset < usernames.length; offset += 30) {
+      const chunk = usernames.slice(offset, offset + 30);
+      statements.push(env.DB.prepare(
+        "INSERT INTO group_usernames (chat_id, username, position) VALUES " +
+        chunk.map(() => "(?, ?, ?)").join(", ")
+      ).bind(...chunk.flatMap((username, index) => [String(chat.id), username, offset + index])));
+    }
+    try {
+      await env.DB.batch(statements);
+    } catch (error) {
+      await sendMessage(env, chat.id, "ذخیره فهرست انجام نشد؛ خطای دیتابیس رخ داد. دوباره امتحان کن.", message);
+      throw error;
+    }
     await sendMessage(env, chat.id, `انجام شد؛ ${usernames.length} یوزرنیم برای این گروه ذخیره شد.`, message);
     return;
   }
