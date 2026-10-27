@@ -10,6 +10,15 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (request.method === "GET" && url.pathname === "/setup") {
+      return new Response(SETUP_HTML, { headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+        "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+      } });
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       return new Response("ok", { headers: { "content-type": "text/plain" } });
     }
@@ -18,6 +27,14 @@ export default {
       if (!env.REGISTER_SECRET || request.headers.get("Authorization") !== `Bearer ${env.REGISTER_SECRET}`) {
         return new Response("Unauthorized", { status: 401 });
       }
+      if (!env.DB || !env.TELEGRAM_BOT_TOKEN || !/^[A-Za-z0-9_-]{1,256}$/.test(env.WEBHOOK_SECRET || "")) {
+        return Response.json({ ok: false, error: "Configure DB, TELEGRAM_BOT_TOKEN and WEBHOOK_SECRET in Worker settings." }, { status: 503 });
+      }
+      await env.DB.batch([
+        env.DB.prepare("CREATE TABLE IF NOT EXISTS group_usernames (chat_id TEXT NOT NULL, username TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (chat_id, username))"),
+        env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_group_usernames_chat_position ON group_usernames (chat_id, position)"),
+        env.DB.prepare("CREATE TABLE IF NOT EXISTS processed_updates (update_id TEXT PRIMARY KEY, status TEXT NOT NULL, last_batch INTEGER NOT NULL DEFAULT 0, lease_until INTEGER NOT NULL DEFAULT 0)"),
+      ]);
       const result = await telegram(env, "setWebhook", {
         url: new URL("/telegram", url).toString(),
         secret_token: env.WEBHOOK_SECRET,
@@ -243,3 +260,9 @@ function safeError(error) {
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const SETUP_HTML = `<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>فعال‌سازی بات</title>
+<style>body{font:18px system-ui;max-width:520px;margin:60px auto;padding:24px;background:#101820;color:#fff}input,button{box-sizing:border-box;width:100%;padding:14px;margin:10px 0;font:inherit}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
+<h1>فعال‌سازی بات تلگرام</h1><p>مقدار REGISTER_SECRET تنظیم‌شده در Cloudflare را وارد کن. جدول‌های دیتابیس ساخته می‌شوند و اتصال تلگرام فعال می‌شود.</p>
+<form><label for="secret">رمز راه‌اندازی</label><input id="secret" type="password" autocomplete="off" required><button>فعال‌سازی بات</button></form><pre id="result" role="status"></pre>
+<script>document.querySelector('form').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('secret'),b=document.querySelector('button'),o=document.getElementById('result');b.disabled=true;o.textContent='در حال فعال‌سازی…';try{const r=await fetch('/register-webhook',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=r.ok?'بات فعال شد. حالا داخل گروه /help را بفرست.':'فعال‌سازی ناموفق: '+await r.text()}catch(e){o.textContent='اتصال برقرار نشد؛ دوباره امتحان کن.'}finally{b.disabled=false}});</script></html>`;
