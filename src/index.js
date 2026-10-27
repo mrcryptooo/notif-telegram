@@ -27,8 +27,13 @@ export default {
       if (!env.REGISTER_SECRET || request.headers.get("Authorization") !== `Bearer ${env.REGISTER_SECRET}`) {
         return new Response("Unauthorized", { status: 401 });
       }
-      if (!env.DB || !env.TELEGRAM_BOT_TOKEN || !/^[A-Za-z0-9_-]{1,256}$/.test(env.WEBHOOK_SECRET || "")) {
-        return Response.json({ ok: false, error: "Configure DB, TELEGRAM_BOT_TOKEN and WEBHOOK_SECRET in Worker settings." }, { status: 503 });
+      const issues = [];
+      if (!env.DB || typeof env.DB.prepare !== "function") issues.push("DB: اتصال دیتابیس D1 با نام دقیق DB تنظیم نشده است.");
+      if (!env.TELEGRAM_BOT_TOKEN?.trim()) issues.push("TELEGRAM_BOT_TOKEN: توکن بات در Variables and Secrets خود Worker تنظیم نشده است.");
+      if (!env.WEBHOOK_SECRET) issues.push("WEBHOOK_SECRET: این Secret در خود Worker تنظیم نشده است.");
+      else if (!/^[A-Za-z0-9_-]{1,256}$/.test(env.WEBHOOK_SECRET)) issues.push("WEBHOOK_SECRET: فقط حروف انگلیسی، عدد، خط تیره و زیرخط مجاز است؛ بدون فاصله و حداکثر ۲۵۶ کاراکتر.");
+      if (issues.length) {
+        return Response.json({ ok: false, error: issues.join("\\n") }, { status: 503 });
       }
       await env.DB.batch([
         env.DB.prepare("CREATE TABLE IF NOT EXISTS group_usernames (chat_id TEXT NOT NULL, username TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (chat_id, username))"),
