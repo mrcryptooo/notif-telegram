@@ -77,6 +77,14 @@ const USERNAME_RE = /@([A-Za-z0-9_]{5,32})\b/g;
 
 export default {
   async fetch(request, env) {
+    try { return await processRequest(request, env); }
+    catch (error) {
+      await recordError(env, error);
+      return new Response("Temporary processing error", { status: 500 });
+    }
+  },
+};
+async function processRequest(request, env) {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/setup") {
@@ -109,6 +117,9 @@ export default {
       try {
         report.processing = (await env.DB.prepare("SELECT status, COUNT(*) AS count FROM processed_updates GROUP BY status").all()).results;
       } catch (error) { report.db_error = safeError(error); }
+      try {
+        report.recent_errors = (await env.DB.prepare("SELECT error, created_at FROM bot_errors ORDER BY rowid DESC LIMIT 5").all()).results;
+      } catch { report.recent_errors = []; }
       return Response.json(report, { headers: { "cache-control": "no-store" } });
     }
 
@@ -165,11 +176,11 @@ export default {
     }
 
     const commandText = update.message?.text || "";
-    if (!/^\/(announce|notifhelp)(?:@[A-Za-z0-9_]+)?(?:\\s|$)/i.test(commandText)) {
+    if (!/^\/(announce|notifhelp)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(commandText)) {
       return new Response("ok");
     }
     // Help must remain available even when database initialization fails.
-    if (/^\/notifhelp(?:@[A-Za-z0-9_]+)?(?:\\s|$)/i.test(commandText)) {
+    if (/^\/notifhelp(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(commandText)) {
       await handleUpdate(update, env, 0);
       return new Response("ok");
     }
@@ -194,10 +205,10 @@ export default {
       ).bind(String(update.update_id)).run();
       // Do not log request URLs or Telegram tokens.
       console.error("Update failed:", safeError(error));
+      await recordError(env, error);
       return new Response("Temporary processing error", { status: 500 });
     }
-  },
-};
+}
 
 async function claimUpdate(db, updateId) {
   const inserted = await db.prepare(
@@ -344,3 +355,12 @@ const SETUP_HTML = `<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-
 <h1>فعال‌سازی بات تلگرام</h1><p>مقدار REGISTER_SECRET تنظیم‌شده در Cloudflare را وارد کن. جدول‌های دیتابیس ساخته می‌شوند و اتصال تلگرام فعال می‌شود.</p>
 <form><label for="secret">رمز راه‌اندازی</label><input id="secret" type="password" autocomplete="off" required><button>فعال‌سازی بات</button><button type="button" id="diagnose">بررسی مشکل بدون تغییر اتصال</button></form><pre id="result" role="status"></pre>
 <script>document.querySelector('form').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('secret'),b=document.querySelector('button'),o=document.getElementById('result');b.disabled=true;o.textContent='در حال فعال‌سازی…';try{const r=await fetch('/register-webhook',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=r.ok?'اتصال ثبت شد. نتیجه بررسی:\\n'+await r.text():'فعال‌سازی ناموفق: '+await r.text()}catch(e){o.textContent='اتصال برقرار نشد؛ دوباره امتحان کن.'}finally{b.disabled=false}});document.getElementById('diagnose').addEventListener('click',async function(){const s=document.getElementById('secret'),o=document.getElementById('result');o.textContent='در حال بررسی…';try{const r=await fetch('/diagnostics',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=await r.text()}catch(e){o.textContent='خطای اتصال'}});</script></html>`;
+
+async function recordError(env, error) {
+  try {
+    const detail = safeError(error).split(env.TELEGRAM_BOT_TOKEN || "__no_token__").join("[redacted]");
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS bot_errors (error TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+    await env.DB.prepare("INSERT INTO bot_errors (error) VALUES (?)").bind(detail).run();
+    await env.DB.prepare("DELETE FROM bot_errors WHERE rowid NOT IN (SELECT rowid FROM bot_errors ORDER BY rowid DESC LIMIT 20)").run();
+  } catch { console.error("Could not persist diagnostic error"); }
+}
