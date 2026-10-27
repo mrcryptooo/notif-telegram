@@ -144,6 +144,19 @@ export default {
       return new Response("ok");
     }
 
+    const commandText = update.message?.text || "";
+    if (!/^\/(announce|notifhelp)(?:@[A-Za-z0-9_]+)?(?:\\s|$)/i.test(commandText)) {
+      return new Response("ok");
+    }
+    // Help must remain available even when database initialization fails.
+    if (/^\/notifhelp(?:@[A-Za-z0-9_]+)?(?:\\s|$)/i.test(commandText)) {
+      await handleUpdate(update, env, 0);
+      return new Response("ok");
+    }
+    // A newly provisioned D1 binding may not have the initial schema yet.
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS processed_updates (update_id TEXT PRIMARY KEY, status TEXT NOT NULL, last_batch INTEGER NOT NULL DEFAULT 0, lease_until INTEGER NOT NULL DEFAULT 0)"
+    ).run();
     const claim = await claimUpdate(env.DB, String(update.update_id));
     if (claim.state === "done" || claim.state === "busy") {
       return new Response("ok");
