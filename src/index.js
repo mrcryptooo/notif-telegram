@@ -92,6 +92,26 @@ export default {
       return new Response("ok", { headers: { "content-type": "text/plain" } });
     }
 
+    if (request.method === "POST" && url.pathname === "/diagnostics") {
+      if (!env.REGISTER_SECRET || request.headers.get("Authorization") !== `Bearer ${env.REGISTER_SECRET}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const report = { version: "diagnostics-v1", db_bound: !!env.DB };
+      try {
+        const bot = await telegram(env, "getMe", {});
+        report.bot_username = bot.username;
+        const info = await telegram(env, "getWebhookInfo", {});
+        report.webhook_url = info.url;
+        report.pending_updates = info.pending_update_count;
+        report.last_error = info.last_error_message || null;
+        report.last_error_date = info.last_error_date || null;
+      } catch (error) { report.telegram_error = safeError(error); }
+      try {
+        report.processing = (await env.DB.prepare("SELECT status, COUNT(*) AS count FROM processed_updates GROUP BY status").all()).results;
+      } catch (error) { report.db_error = safeError(error); }
+      return Response.json(report, { headers: { "cache-control": "no-store" } });
+    }
+
     if (request.method === "POST" && url.pathname === "/register-webhook") {
       if (!env.REGISTER_SECRET || request.headers.get("Authorization") !== `Bearer ${env.REGISTER_SECRET}`) {
         return new Response("Unauthorized", { status: 401 });
@@ -322,5 +342,5 @@ function delay(ms) {
 const SETUP_HTML = `<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>فعال‌سازی بات</title>
 <style>body{font:18px system-ui;max-width:520px;margin:60px auto;padding:24px;background:#101820;color:#fff}input,button{box-sizing:border-box;width:100%;padding:14px;margin:10px 0;font:inherit}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
 <h1>فعال‌سازی بات تلگرام</h1><p>مقدار REGISTER_SECRET تنظیم‌شده در Cloudflare را وارد کن. جدول‌های دیتابیس ساخته می‌شوند و اتصال تلگرام فعال می‌شود.</p>
-<form><label for="secret">رمز راه‌اندازی</label><input id="secret" type="password" autocomplete="off" required><button>فعال‌سازی بات</button></form><pre id="result" role="status"></pre>
-<script>document.querySelector('form').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('secret'),b=document.querySelector('button'),o=document.getElementById('result');b.disabled=true;o.textContent='در حال فعال‌سازی…';try{const r=await fetch('/register-webhook',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=r.ok?'اتصال ثبت شد. نتیجه بررسی:\\n'+await r.text():'فعال‌سازی ناموفق: '+await r.text()}catch(e){o.textContent='اتصال برقرار نشد؛ دوباره امتحان کن.'}finally{b.disabled=false}});</script></html>`;
+<form><label for="secret">رمز راه‌اندازی</label><input id="secret" type="password" autocomplete="off" required><button>فعال‌سازی بات</button><button type="button" id="diagnose">بررسی مشکل بدون تغییر اتصال</button></form><pre id="result" role="status"></pre>
+<script>document.querySelector('form').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('secret'),b=document.querySelector('button'),o=document.getElementById('result');b.disabled=true;o.textContent='در حال فعال‌سازی…';try{const r=await fetch('/register-webhook',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=r.ok?'اتصال ثبت شد. نتیجه بررسی:\\n'+await r.text():'فعال‌سازی ناموفق: '+await r.text()}catch(e){o.textContent='اتصال برقرار نشد؛ دوباره امتحان کن.'}finally{b.disabled=false}});document.getElementById('diagnose').addEventListener('click',async function(){const s=document.getElementById('secret'),o=document.getElementById('result');o.textContent='در حال بررسی…';try{const r=await fetch('/diagnostics',{method:'POST',headers:{Authorization:'Bearer '+s.value}});s.value='';o.textContent=await r.text()}catch(e){o.textContent='خطای اتصال'}});</script></html>`;
